@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIBERO 逐秒空间动作标注</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header>
+  <h1>LIBERO 逐秒空间动作标注</h1>
+  <p id="summary">加载中…</p>
+</header>
+<main>
+  <div class="card" style="margin-bottom:12px">
+    Qwen3-VL-30B-A3B-Instruct 模型草稿：每 1 秒一条英文动作指令，结合机器人本体状态判断动作阶段。
+    <b>语义准确率尚未经人工验收</b>；橙色标记是自动质检提示（阶段与动词不一致、词数异常、Unclear action 等），不是完整错误清单。
+  </div>
+  <div class="filters">
+    <input id="q" type="search" placeholder="搜索 episode 编号或任务文本，例如 412 或 microwave">
+    <select id="task"><option value="">全部任务</option></select>
+    <label><input id="flagged" type="checkbox"> 只看有质检提示的</label>
+  </div>
+  <table class="list">
+    <thead><tr><th>Episode</th><th>任务</th><th class="num">时长</th><th class="num">条数</th><th class="num">质检提示</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <div class="pager">
+    <button id="prev">上一页</button><span id="page" class="muted"></span><button id="next">下一页</button>
+  </div>
+</main>
+<script>
+const PAGE = 100;
+let all = [], view = [], page = 0;
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+
+function apply() {
+  const q = $('q').value.trim().toLowerCase(), task = $('task').value, onlyFlagged = $('flagged').checked;
+  view = all.filter(e => (!task || e.task === task) && (!onlyFlagged || e.flagged > 0) &&
+    (!q || String(e.episode) === q || e.task.toLowerCase().includes(q)));
+  page = 0; render();
+}
+
+function render() {
+  const pages = Math.max(1, Math.ceil(view.length / PAGE));
+  page = Math.min(page, pages - 1);
+  $('rows').innerHTML = view.slice(page * PAGE, (page + 1) * PAGE).map(e =>
+    `<tr><td><a href="episode.html?ep=${e.episode}">${e.episode}</a></td><td>${esc(e.task)}</td>` +
+    `<td class="num">${e.duration.toFixed(1)} s</td><td class="num">${e.windows}</td>` +
+    `<td class="num">${e.flagged ? `<span class="badge">${e.flagged}</span>` : ''}</td></tr>`).join('');
+  $('page').textContent = `第 ${page + 1} / ${pages} 页，共 ${view.length} 个 episode`;
+  $('prev').disabled = page === 0; $('next').disabled = page >= pages - 1;
+}
+
+fetch('data/index.json').then(r => r.json()).then(entries => {
+  all = entries;
+  const windows = all.reduce((n, e) => n + e.windows, 0), flagged = all.reduce((n, e) => n + e.flagged, 0);
+  const tasks = [...new Set(all.map(e => e.task))].sort();
+  $('summary').textContent = `${all.length} 个 episode，${tasks.length} 个任务，${windows} 条逐秒标注，其中 ${flagged} 条有质检提示`;
+  $('task').innerHTML += tasks.map(t => `<option>${esc(t)}</option>`).join('');
+  ['q', 'task', 'flagged'].forEach(id => $(id).addEventListener('input', apply));
+  $('prev').onclick = () => { page--; render(); };
+  $('next').onclick = () => { page++; render(); };
+  apply();
+}).catch(err => { $('summary').textContent = '无法加载 data/index.json：' + err; });
+</script>
+</body>
+</html>

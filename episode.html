@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LIBERO episode 逐秒查看</title>
+<link rel="stylesheet" href="viewer.css">
+</head>
+<body>
+<header>
+  <h1 id="title">Episode</h1>
+  <p id="task" class="muted"></p>
+</header>
+<main>
+  <div class="nav">
+    <a href="index.html">← 返回列表</a>
+    <span><a id="prevEp" href="#">上一个 episode</a> · <a id="nextEp" href="#">下一个 episode</a></span>
+  </div>
+  <div class="layout">
+    <div class="player">
+      <video id="video" preload="auto" muted playsinline></video>
+      <div class="timeline" id="timeline" title="每格 1 秒，橙色为有质检提示的秒"></div>
+      <div class="controls">
+        <button id="back">◀ 上一秒</button>
+        <button id="play">▶ 播放本秒</button>
+        <button id="fwd">下一秒 ▶</button>
+        <button id="all">连续播放</button>
+        <label>速度
+          <select id="rate"><option>0.25</option><option>0.5</option><option selected>1</option><option>2</option></select>
+        </label>
+        <label><input id="loop" type="checkbox"> 循环本秒</label>
+      </div>
+      <div class="keys">快捷键：<kbd>←</kbd>/<kbd>→</kbd> 上一秒/下一秒，<kbd>空格</kbd> 播放本秒，<kbd>,</kbd>/<kbd>.</kbd> 逐帧</div>
+      <div class="card now">
+        <div class="time" id="nowTime"></div>
+        <div class="text" id="nowText"></div>
+        <div class="muted" id="nowMeta" style="font-size:13px"></div>
+      </div>
+    </div>
+    <div>
+      <table class="win"><tbody id="rows"></tbody></table>
+      <p class="muted" style="font-size:12px">实测阶段（phase）由机器人 state/actions 计算，仅作参考。标注为模型草稿，未经人工逐条验收。</p>
+    </div>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+const video = $('video');
+const params = new URLSearchParams(location.search);
+const ep = parseInt(params.get('ep') || '0', 10);
+const pad = n => String(n).padStart(6, '0');
+let W = [], fps = 10, current = -1, stopAt = null;
+const EPS = 1e-3;
+
+// Index of the window containing time t ([s, e) half-open; the last window also owns its end).
+function windowAt(t) {
+  for (let i = 0; i < W.length; i++) if (t >= W[i].s - EPS && t < W[i].e - EPS) return i;
+  return W.length - 1;
+}
+
+function highlight(i) {
+  if (i === current || i < 0) return;
+  current = i;
+  document.querySelectorAll('#rows tr').forEach((tr, k) => tr.classList.toggle('current', k === i));
+  document.querySelectorAll('#timeline span').forEach((sp, k) => sp.classList.toggle('on', k === i));
+  const w = W[i];
+  $('nowTime').textContent = `第 ${i + 1} / ${W.length} 秒 · ${w.s.toFixed(2)}–${w.e.toFixed(2)} s`;
+  $('nowText').textContent = w.text;
+  $('nowMeta').innerHTML = [w.phase && `实测阶段：${esc(w.phase)}`, w.subtask && `当前子任务：${esc(w.subtask)}`,
+    w.flags.length && `<span class="badge">${esc(w.flags.join(', '))}</span>`].filter(Boolean).join(' · ');
+  const row = document.querySelectorAll('#rows tr')[i];
+  if (row) row.scrollIntoView({block: 'nearest'});
+  history.replaceState(null, '', `?ep=${ep}&t=${w.s}`);
+}
+
+// Seek to the start of window i; play=true plays exactly that second, then pauses (or loops).
+function go(i, play) {
+  i = Math.max(0, Math.min(W.length - 1, i));
+  stopAt = play ? W[i].e : null;
+  video.currentTime = W[i].s + EPS;
+  highlight(i);
+  if (play) video.play(); else video.pause();
+}
+
+// timeupdate fires only ~4 times per second, so poll with requestAnimationFrame for exact 1 s stops.
+function tick() {
+  if (!video.paused) {
+    const t = video.currentTime;
+    if (stopAt !== null && t >= stopAt - EPS) {
+      if ($('loop').checked) { video.currentTime = W[current].s + EPS; }
+      else { video.pause(); video.currentTime = Math.max(W[current].s, stopAt - 1 / fps / 2); stopAt = null; }
+    } else highlight(windowAt(t));
+  }
+  requestAnimationFrame(tick);
+}
+
+video.addEventListener('seeked', () => { if (video.paused) highlight(windowAt(video.currentTime)); });
+video.addEventListener('ended', () => {
+  if (stopAt !== null && $('loop').checked) go(current, true); else stopAt = null;
+});
+$('back').onclick = () => go(current - 1, false);
+$('fwd').onclick = () => go(current + 1, false);
+$('play').onclick = () => go(current, true);
+$('all').onclick = () => { stopAt = null; if (video.ended) video.currentTime = 0; video.play(); };
+$('rate').onchange = () => { video.playbackRate = parseFloat($('rate').value); };
+document.addEventListener('keydown', ev => {
+  if (ev.target.tagName === 'SELECT' || ev.target.tagName === 'INPUT') return;
+  const step = { ArrowLeft: () => go(current - 1, false), ArrowRight: () => go(current + 1, false),
+    ' ': () => (video.paused ? go(current, true) : video.pause()),
+    ',': () => { video.pause(); video.currentTime = Math.max(0, video.currentTime - 1 / fps); },
+    '.': () => { video.pause(); video.currentTime = Math.min(video.duration, video.currentTime + 1 / fps); } }[ev.key];
+  if (step) { ev.preventDefault(); step(); }
+});
+
+fetch(`data/episode_${pad(ep)}.json`).then(r => { if (!r.ok) throw new Error(r.status); return r.json(); }).then(d => {
+  W = d.windows; fps = d.fps;
+  document.title = `Episode ${d.episode} · LIBERO 标注`;
+  $('title').textContent = `Episode ${d.episode}`;
+  $('task').textContent = `任务：${d.task} · ${d.duration.toFixed(1)} s · ${d.fps} fps · ${W.length} 条标注 · ${d.model}`;
+  $('rows').innerHTML = W.map((w, i) =>
+    `<tr data-i="${i}" class="${w.flags.length ? 'flagged' : ''}"><td class="t">${w.s.toFixed(0)}–${w.e.toFixed(1)} s</td>` +
+    `<td>${esc(w.text)}${w.flags.length ? ` <span class="badge">${esc(w.flags.join(', '))}</span>` : ''}</td>` +
+    `<td class="ph">${esc(w.phase || '')}</td></tr>`).join('');
+  $('timeline').innerHTML = W.map((w, i) =>
+    `<span data-i="${i}" class="${w.flags.length ? 'flag' : ''}" title="${w.s}–${w.e} s"></span>`).join('');
+  document.querySelectorAll('#rows tr, #timeline span').forEach(el => el.onclick = () => go(+el.dataset.i, true));
+  video.src = `videos/episode_${pad(ep)}.mp4`;
+  const start = parseFloat(params.get('t'));
+  video.addEventListener('loadedmetadata', () => go(Number.isFinite(start) ? windowAt(start) : 0, false), {once: true});
+  requestAnimationFrame(tick);
+  return fetch('data/index.json').then(r => r.json());
+}).then(list => {
+  const ids = list.map(e => e.episode), k = ids.indexOf(ep);
+  const link = (el, id) => { if (id === undefined) el.style.visibility = 'hidden'; else el.href = `episode.html?ep=${id}`; };
+  link($('prevEp'), ids[k - 1]); link($('nextEp'), ids[k + 1]);
+}).catch(err => { $('title').textContent = `Episode ${ep} 加载失败`; $('task').textContent = String(err); });
+</script>
+</body>
+</html>
